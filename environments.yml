@@ -1,0 +1,14 @@
+ec2_chef_redhat_linux:
+    cloud: ec2
+    distro: redhat
+    provisioner: chef
+    volume: linux
+    blockdevice: linux
+    finalizer: tagging_ebs
+ec2_chef_debian_linux:
+    cloud: ec2
+    distro: debian
+    provisioner: chef
+    volume: linux
+    blockdevice: linux
+    finalizer: tagging_ebs

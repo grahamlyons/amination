@@ -1,0 +1,293 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09",
+    "Description": "Create a multi-az, load balanced, Auto Scaled web application. The Auto Scaling trigger is based on the CPU utilization of the web servers. The instances are load balanced with a simple health check. The web site is available on port 80, however, the instances can be configured to listen on any port (8888 by default).",
+    "Outputs": {
+        "URL": {
+            "Description": "The URL of the website",
+            "Value": {
+                "Fn::Join": [
+                    "",
+                    [
+                        "http://",
+                        {
+                            "Fn::GetAtt": [
+                                "ElasticLoadBalancer",
+                                "DNSName"
+                            ]
+                        }
+                    ]
+                ]
+            }
+        }
+    },
+    "Parameters": {
+        "BaseAmiId": {
+            "Description": "The ID of the Amazon Machine Image to use in the Auto Scaling Group",
+            "Type": "String"
+        },
+        "ChefPayloadUrl": {
+            "Description": "The ID of the Amazon Machine Image to use in the Auto Scaling Group",
+            "Type": "String"
+        },
+        "AminationFactoryToken": {
+            "Description": "The SNS topic to send a request for amination to.",
+            "Type": "String"
+        },
+        "Environment": {
+            "Description": "The name of the environment the the app will run in.",
+            "Type": "String"
+        },
+        "Application": {
+            "Description": "The name of the application running on the stack.",
+            "Type": "String"
+        },
+        "BaseHostName": {
+            "Description": "The base hostname to construct the DNS from, terminated with a '.'",
+            "Type": "String"
+        },
+        "DesiredInstances": {
+            "Description": "The desired number of instances to launch in the Auto Scaling Group",
+            "Type": "String",
+            "Default": "1"
+        },
+        "InstanceType": {
+            "Default": "t1.micro",
+            "Description": "Type of EC2 instance to launch",
+            "Type": "String"
+        },
+        "KeyName": {
+            "Default": "admin",
+            "Description": "The EC2 Key Pair to allow SSH access to the instances",
+            "Type": "String"
+        },
+        "MaxInstances": {
+            "Description": "The maximum number of instances to launch in the Auto Scaling Group",
+            "Type": "String",
+            "Default": "1"
+        },
+        "MinInstances": {
+            "Description": "The minimum number of instances to launch in the Auto Scaling Group",
+            "Type": "String",
+            "Default": "1"
+        }
+    },
+    "Resources": {
+        "CPUAlarmHigh": {
+            "Properties": {
+                "AlarmActions": [
+                    {
+                        "Ref": "WebServerScaleUpPolicy"
+                    }
+                ],
+                "AlarmDescription": "Scale-up if CPU > 90% for 10 minutes",
+                "ComparisonOperator": "GreaterThanThreshold",
+                "Dimensions": [
+                    {
+                        "Name": "AutoScalingGroupName",
+                        "Value": {
+                            "Ref": "WebServerGroup"
+                        }
+                    }
+                ],
+                "EvaluationPeriods": "2",
+                "MetricName": "CPUUtilization",
+                "Namespace": "AWS/ EC2",
+                "Period": "300",
+                "Statistic": "Average",
+                "Threshold": "90"
+            },
+            "Type": "AWS::CloudWatch::Alarm"
+        },
+        "CPUAlarmLow": {
+            "Properties": {
+                "AlarmActions": [
+                    {
+                        "Ref": "WebServerScaleDownPolicy"
+                    }
+                ],
+                "AlarmDescription": "Scale-down if CPU < 70% for 10 minutes",
+                "ComparisonOperator": "LessThanThreshold",
+                "Dimensions": [
+                    {
+                        "Name": "AutoScalingGroupName",
+                        "Value": {
+                            "Ref": "WebServerGroup"
+                        }
+                    }
+                ],
+                "EvaluationPeriods": "2",
+                "MetricName": "CPUUtilization",
+                "Namespace": "AWS/ EC2",
+                "Period": "600",
+                "Statistic": "Average",
+                "Threshold": "70"
+            },
+            "Type": "AWS::CloudWatch::Alarm"
+        },
+        "ElasticLoadBalancer": {
+            "Properties": {
+                "AvailabilityZones": {
+                    "Fn::GetAZs": ""
+                },
+                "HealthCheck": {
+                    "HealthyThreshold": "3",
+                    "Interval": "30",
+                    "Target": "HTTP:80/",
+                    "Timeout": "5",
+                    "UnhealthyThreshold": "5"
+                },
+                "Listeners": [
+                    {
+                        "InstancePort": "80",
+                        "LoadBalancerPort": "80",
+                        "Protocol": "HTTP"
+                    }
+                ]
+            },
+            "Type": "AWS::ElasticLoadBalancing::LoadBalancer"
+        },
+        "InstanceSecurityGroup": {
+            "Properties": {
+                "GroupDescription": "Enable HTTP access on the inbound port",
+                "SecurityGroupIngress": [
+                    {
+                        "CidrIp": "0.0.0.0/0",
+                        "FromPort": "22",
+                        "IpProtocol": "tcp",
+                        "ToPort": "22"
+                    },
+                    {
+                        "FromPort": "80",
+                        "IpProtocol": "tcp",
+                        "SourceSecurityGroupName": {
+                            "Fn::GetAtt": [
+                                "ElasticLoadBalancer",
+                                "SourceSecurityGroup.GroupName"
+                            ]
+                        },
+                        "SourceSecurityGroupOwnerId": {
+                            "Fn::GetAtt": [
+                                "ElasticLoadBalancer",
+                                "SourceSecurityGroup.OwnerAlias"
+                            ]
+                        },
+                        "ToPort": "80"
+                    }
+                ]
+            },
+            "Type": "AWS::EC2::SecurityGroup"
+        },
+        "Amination" : {
+         "Type": "Custom::Amination",
+         "Version" : "1.0",
+         "Properties" : {
+            "ServiceToken": {
+                "Ref": "AminationFactoryToken"
+            },
+            "ChefPayloadUrl": {
+                    "Ref": "ChefPayloadUrl"
+                },
+            "BaseAmiId": {
+                    "Ref": "BaseAmiId"
+                }
+         }
+        },
+        "LaunchConfig": {
+            "Properties": {
+                "ImageId": { "Fn::GetAtt" : ["Amination", "AmiId"] },
+                "InstanceType": {
+                    "Ref": "InstanceType"
+                },
+                "KeyName": {
+                    "Ref": "KeyName"
+                },
+                "SecurityGroups": [
+                    {
+                        "Ref": "InstanceSecurityGroup"
+                    }
+                ]
+            },
+            "Type": "AWS::AutoScaling::LaunchConfiguration"
+        },
+        "WebServerGroup": {
+            "Properties": {
+                "AvailabilityZones": {
+                    "Fn::GetAZs": ""
+                },
+                "DesiredCapacity": {
+                    "Ref": "DesiredInstances"
+                },
+                "LaunchConfigurationName": {
+                    "Ref": "LaunchConfig"
+                },
+                "LoadBalancerNames": [
+                    {
+                        "Ref": "ElasticLoadBalancer"
+                    }
+                ],
+                "MaxSize": {
+                    "Ref": "MaxInstances"
+                },
+                "MinSize": {
+                    "Ref": "MinInstances"
+                }
+            },
+            "Type": "AWS::AutoScaling::AutoScalingGroup",
+            "UpdatePolicy": {
+                "AutoScalingRollingUpdate": {
+                    "MinInstancesInService": "1"
+                }
+            }
+        },
+        "WebServerScaleDownPolicy": {
+            "Properties": {
+                "AdjustmentType": "ChangeInCapacity",
+                "AutoScalingGroupName": {
+                    "Ref": "WebServerGroup"
+                },
+                "Cooldown": "60",
+                "ScalingAdjustment": "-1"
+            },
+            "Type": "AWS::AutoScaling::ScalingPolicy"
+        },
+        "WebServerScaleUpPolicy": {
+            "Properties": {
+                "AdjustmentType": "ChangeInCapacity",
+                "AutoScalingGroupName": {
+                    "Ref": "WebServerGroup"
+                },
+                "Cooldown": "60",
+                "ScalingAdjustment": "1"
+            },
+            "Type": "AWS::AutoScaling::ScalingPolicy"
+        },
+        "HostName": {
+            "Type" : "AWS::Route53::RecordSet",
+            "Properties" : {
+                "HostedZoneId" : "/hostedzone/Z1C4ENKSC1XOXN",
+                "Comment" : "CNAME for the load balander",
+                "Name" : {
+                    "Fn::Join": [
+                        ".",
+                        [
+                            {
+                                "Ref": "Environment"
+                            },
+                            {
+                                "Ref": "Application"
+                            },
+                            {
+                                "Ref": "BaseHostName"
+                            }
+                        ]
+                    ]
+                },
+                "Type" : "CNAME",
+                "TTL" : "900",
+                "ResourceRecords" : [
+                    {"Fn::GetAtt":["ElasticLoadBalancer","DNSName"]}
+                ]
+            }
+        }
+    }
+}

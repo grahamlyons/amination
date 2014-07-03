@@ -1,0 +1,396 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09",
+    "Description": "Create an autoscaling group and the required queues and sns topics for a CloudFormation custom resource.",
+    "Outputs": {
+        "MessageTopic": {
+            "Description": "The name of the SNS topic",
+            "Value": {
+                "Ref": "MessageTopic"
+            }
+        }
+    },
+    "Parameters": {
+        "AmiId": {
+            "Default": "ami-896c96fe",
+            "Description": "The ID of the Amazon Machine Image to use in the Auto Scaling Group",
+            "Type": "String"
+        },
+        "DesiredInstances": {
+            "Default": "1",
+            "Description": "The desired number of instances to launch in the Auto Scaling Group",
+            "Type": "String"
+        },
+        "InstanceType": {
+            "Default": "t1.micro",
+            "Description": "Type of EC2 instance to launch",
+            "Type": "String"
+        },
+        "KeyName": {
+            "Default": "admin",
+            "Description": "The EC2 Key Pair to allow SSH access to the instances",
+            "Type": "String"
+        },
+        "MaxInstances": {
+            "Default": "1",
+            "Description": "The maximum number of instances to launch in the Auto Scaling Group",
+            "Type": "String"
+        },
+        "MinInstances": {
+            "Default": "1",
+            "Description": "The minimum number of instances to launch in the Auto Scaling Group",
+            "Type": "String"
+        }
+    },
+    "Resources": {
+        "InstanceSecurityGroup": {
+            "Properties": {
+                "GroupDescription": "Enable SSH access on the inbound port",
+                "SecurityGroupIngress": [
+                    {
+                        "CidrIp": "0.0.0.0/0",
+                        "FromPort": "22",
+                        "IpProtocol": "tcp",
+                        "ToPort": "22"
+                    }
+                ]
+            },
+            "Type": "AWS::EC2::SecurityGroup"
+        },
+        "LaunchConfig": {
+            "Properties": {
+                "IamInstanceProfile": {
+                    "Ref": "QueueAccessProfile"
+                },
+                "ImageId": {
+                    "Ref": "AmiId"
+                },
+                "InstanceType": {
+                    "Ref": "InstanceType"
+                },
+                "KeyName": {
+                    "Ref": "KeyName"
+                },
+                "SecurityGroups": [
+                    {
+                        "Ref": "InstanceSecurityGroup"
+                    }
+                ],
+                "UserData" : { "Fn::Base64" : { "Fn::Join" : ["", [
+                    "#!/bin/bash\n",
+                    "cd /tmp && wget https://www.opscode.com/chef/install.sh && bash install.sh -v 11.10.2",
+                    "wget https://s3-eu-west-1.amazonaws.com/chef-payloads/amination_factory.tar.gz",
+                    " && ",
+                    "tar -xzf amination_factory.tar.gz",
+                    " && ",
+                    "chef-solo -j /tmp/node.json -c /tmp/solo.rb"
+                ]]}}
+            },
+            "Type": "AWS::AutoScaling::LaunchConfiguration"
+        },
+        "MessageDLQ": {
+            "Type": "AWS::SQS::Queue"
+        },
+        "MessageQueue": {
+            "Properties": {
+                "RedrivePolicy": {
+                    "deadLetterTargetArn": {
+                        "Fn::GetAtt": [
+                            "MessageDLQ",
+                            "Arn"
+                        ]
+                    },
+                    "maxReceiveCount": 5
+                }
+            },
+            "Type": "AWS::SQS::Queue"
+        },
+        "MessageQueuePolicy": {
+            "Properties": {
+                "PolicyDocument": {
+                    "Id": "AllowSendMessage",
+                    "Statement": [
+                        {
+                            "Action": "sqs:SendMessage",
+                            "Condition": {
+                                "ArnEquals": {
+                                    "aws:SourceArn": {
+                                        "Ref": "MessageTopic"
+                                    }
+                                }
+                            },
+                            "Effect": "Allow",
+                            "Principal": {
+                                "AWS": "*"
+                            },
+                            "Resource": "*",
+                            "Sid": "AllowSNSAccess54321"
+                        }
+                    ],
+                    "Version": "2008-10-17"
+                },
+                "Queues": [
+                    {
+                        "Ref": "MessageQueue"
+                    }
+                ]
+            },
+            "Type": "AWS::SQS::QueuePolicy"
+        },
+        "MessageTopic": {
+            "Properties": {
+                "Subscription": [
+                    {
+                        "Endpoint": {
+                            "Fn::GetAtt": [
+                                "MessageQueue",
+                                "Arn"
+                            ]
+                        },
+                        "Protocol": "sqs"
+                    }
+                ],
+                "TopicName": "IncomingMessages"
+            },
+            "Type": "AWS::SNS::Topic"
+        },
+        "MessagesOnDLQ": {
+            "Properties": {
+                "AlarmDescription": "Alarm if more than 1 message on the dead letter queue",
+                "ComparisonOperator": "GreaterThanThreshold",
+                "Dimensions": [
+                    {
+                        "Name": "QueueName",
+                        "Value": {
+                            "Fn::GetAtt": [
+                                "MessageDLQ",
+                                "QueueName"
+                            ]
+                        }
+                    }
+                ],
+                "EvaluationPeriods": "1",
+                "MetricName": "ApproximateNumberOfMessagesVisible",
+                "Namespace": "AWS/SQS",
+                "Period": "60",
+                "Statistic": "Sum",
+                "Threshold": "1"
+            },
+            "Type": "AWS::CloudWatch::Alarm"
+        },
+        "QueueAccessProfile": {
+            "Properties": {
+                "Path": "/",
+                "Roles": [
+                    {
+                        "Ref": "QueueAccessRole"
+                    }
+                ]
+            },
+            "Type": "AWS::IAM::InstanceProfile"
+        },
+        "QueueAccessRole": {
+            "Properties": {
+                "AssumeRolePolicyDocument": {
+                    "Statement": [
+                        {
+                            "Action": [
+                                "sts:AssumeRole"
+                            ],
+                            "Effect": "Allow",
+                            "Principal": {
+                                "Service": [
+                                    "ec2.amazonaws.com"
+                                ]
+                            }
+                        }
+                    ],
+                    "Version": "2012-10-17"
+                },
+                "Path": "/",
+                "Policies": [
+                    {
+                        "PolicyDocument": {
+                            "Statement": [
+                                {
+                                    "Action": [
+                                        "ec2:AttachVolume",
+                                        "ec2:CopySnapshot",
+                                        "ec2:CreateSnapshot",
+                                        "ec2:CreateTags",
+                                        "ec2:CreateVolume",
+                                        "ec2:DeleteSnapshot",
+                                        "ec2:DeleteTags",
+                                        "ec2:DeleteVolume",
+                                        "ec2:DeregisterImage",
+                                        "ec2:DetachVolume",
+                                        "ec2:RegisterImage",
+                                        "ec2:Describe*"
+                                    ],
+                                    "Effect": "Allow",
+                                    "Resource": [
+                                        "*"
+                                    ]
+                                }
+                            ],
+                            "Version": "2012-10-17"
+                        },
+                        "PolicyName": "Aminate"
+                    },
+                    {
+                        "PolicyDocument": {
+                            "Statement": [
+                                {
+                                    "Action": [
+                                        "sqs:ReceiveMessage",
+                                        "sqs:ChangeMessageVisibility",
+                                        "sqs:DeleteMessage"
+                                    ],
+                                    "Effect": "Allow",
+                                    "Resource": {
+                                        "Fn::GetAtt": [
+                                            "MessageQueue",
+                                            "Arn"
+                                        ]
+                                    }
+                                }
+                            ],
+                            "Version": "2012-10-17"
+                        },
+                        "PolicyName": "TakeQueueMessages"
+                    }
+                ]
+            },
+            "Type": "AWS::IAM::Role"
+        },
+        "ServerGroup": {
+            "Properties": {
+                "AvailabilityZones": {
+                    "Fn::GetAZs": ""
+                },
+                "DesiredCapacity": {
+                    "Ref": "DesiredInstances"
+                },
+                "LaunchConfigurationName": {
+                    "Ref": "LaunchConfig"
+                },
+                "MaxSize": {
+                    "Ref": "MaxInstances"
+                },
+                "MinSize": {
+                    "Ref": "MinInstances"
+                }
+            },
+            "Type": "AWS::AutoScaling::AutoScalingGroup",
+            "UpdatePolicy": {
+                "AutoScalingRollingUpdate": {
+                    "MinInstancesInService": "1"
+                }
+            }
+        },
+        "ServerScaleDownPolicy": {
+            "Properties": {
+                "AdjustmentType": "ChangeInCapacity",
+                "AutoScalingGroupName": {
+                    "Ref": "ServerGroup"
+                },
+                "Cooldown": "60",
+                "ScalingAdjustment": "-1"
+            },
+            "Type": "AWS::AutoScaling::ScalingPolicy"
+        },
+        "ServerScaleUpPolicy": {
+            "Properties": {
+                "AdjustmentType": "ChangeInCapacity",
+                "AutoScalingGroupName": {
+                    "Ref": "ServerGroup"
+                },
+                "Cooldown": "60",
+                "ScalingAdjustment": "1"
+            },
+            "Type": "AWS::AutoScaling::ScalingPolicy"
+        },
+        "TooFewMessages": {
+            "Properties": {
+                "AlarmActions": [
+                    {
+                        "Ref": "ServerScaleDownPolicy"
+                    }
+                ],
+                "AlarmDescription": "Scale-down if there aren't any messages",
+                "ComparisonOperator": "LessThanThreshold",
+                "Dimensions": [
+                    {
+                        "Name": "QueueName",
+                        "Value": {
+                            "Fn::GetAtt": [
+                                "MessageQueue",
+                                "QueueName"
+                            ]
+                        }
+                    }
+                ],
+                "EvaluationPeriods": "10",
+                "MetricName": "NumberOfEmptyReceives",
+                "Namespace": "AWS/SQS",
+                "Period": "60",
+                "Statistic": "Sum",
+                "Threshold": "3"
+            },
+            "Type": "AWS::CloudWatch::Alarm"
+        },
+        "TooManyMessages": {
+            "Properties": {
+                "AlarmActions": [
+                    {
+                        "Ref": "ServerScaleUpPolicy"
+                    }
+                ],
+                "AlarmDescription": "Alarm if more than 1 message on the queue",
+                "ComparisonOperator": "GreaterThanThreshold",
+                "Dimensions": [
+                    {
+                        "Name": "QueueName",
+                        "Value": {
+                            "Fn::GetAtt": [
+                                "MessageQueue",
+                                "QueueName"
+                            ]
+                        }
+                    }
+                ],
+                "EvaluationPeriods": "3",
+                "MetricName": "ApproximateNumberOfMessagesVisible",
+                "Namespace": "AWS/SQS",
+                "Period": "60",
+                "Statistic": "Sum",
+                "Threshold": "1"
+            },
+            "Type": "AWS::CloudWatch::Alarm"
+        },
+        "TopicPolicy": {
+            "Properties": {
+                "PolicyDocument": {
+                    "Id": "AllowPublish",
+                    "Statement": [
+                        {
+                            "Action": "sns:Publish",
+                            "Effect": "Allow",
+                            "Principal": {
+                                "AWS": "*"
+                            },
+                            "Resource": "*",
+                            "Sid": "AllowCustomResourceAccess"
+                        }
+                    ],
+                    "Version": "2012-10-17"
+                },
+                "Topics": [
+                    {
+                        "Ref": "MessageTopic"
+                    }
+                ]
+            },
+            "Type": "AWS::SNS::TopicPolicy"
+        }
+    }
+}
