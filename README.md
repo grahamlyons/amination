@@ -20,6 +20,8 @@ This doesn't work with the official base CentOS AMI; the root device is named `/
 
 The Ruby script assumes that the Amination Factory stack is already created (the machine was set up manually).
 
+This script was run in an AWS account that has a default VPC. With a manually created VPC, as in the Shutl account, there would need to be extra information passed to the resources to tell them, for example, which subnets to run in.
+
 The Amination Factory machine(s) need to be set up manually with the following procedure:
 
 ### Setup
